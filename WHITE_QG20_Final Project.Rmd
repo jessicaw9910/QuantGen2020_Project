@@ -1,0 +1,1178 @@
+---
+title: "QG20 Final Project"
+author: "Jess White"
+date: "5/12/2020"
+geometry: margin=1.25cm
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  pdf_document:
+    toc: yes
+subtitle: |
+  | Genome-Wide Association Analysis of Subset of Data from
+  | Genetic European Variation in Health and Disease (gEUVADIS) Consortium
+editor_options:
+  chunk_output_type: console
+header-includes: 
+  \usepackage{wrapfig}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align="center")
+```
+
+```{r dependencies, message=FALSE, warning=FALSE, echo=FALSE}
+library(ggplot2)
+library(scales)
+library(dplyr)
+library(tidyr)
+library(reshape)
+library(gridExtra)
+library(gridGraphics)
+library(grid)
+library(gridExtra)
+# library(tidyverse)
+```
+
+```{r importing, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+## population origin and gender information for the 344 samples
+covars <- read.csv("C:/Users/jessb/OneDrive/MS-CB/
+                   Quant Gen/Project/assets/covars.csv", 
+                   header = TRUE, 
+                   stringsAsFactors = TRUE, 
+                   row.names = 1)
+head(covars)
+str(covars)
+
+## phenotype data for 344 samples and 5 genes
+pheno <- read.csv("C:/Users/jessb/OneDrive/MS-CB/
+                  Quant Gen/Project/assets/phenotypes.csv",
+                  header = TRUE,
+                  row.names = 1)
+head(pheno)
+str(pheno)
+
+## SNP data for 344 samples and 50000 genotypes
+geno <- read.csv("C:/Users/jessb/OneDrive/MS-CB/
+                 Quant Gen/Project/assets/genotypes.csv",
+                 header = TRUE, 
+                 stringsAsFactors = FALSE,
+                 row.names = 1)
+geno[1:5, 1:5]
+dim(geno)
+
+## additional information on the genotypes and has four columns
+gene_info <- read.csv("C:/Users/jessb/OneDrive/MS-CB/
+                      Quant Gen/Project/assets/gene_info.csv",
+                      header = TRUE,
+                      stringsAsFactors = FALSE)
+head(gene_info)
+str(gene_info)
+
+## additional information on the genotypes and has four columns
+snp_info <- read.csv("C:/Users/jessb/OneDrive/MS-CB/
+                     Quant Gen/Project/assets/SNP_info.csv",
+                     header = TRUE,
+                     stringsAsFactors = FALSE)
+head(snp_info)
+str(snp_info)
+
+save(covars, pheno, geno, gene_info, snp_info, 
+     file =
+       "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/geuvadis.rda")
+```
+
+```{r xa_xd_encoding, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+n_rows <- nrow(geno)
+n_cols <- ncol(geno)
+
+## set this equal to number of unique codings in raw data set
+nrow <- 3
+
+## determines minor allele for each column
+find_counts <- function(data_col){
+  table_temp <- table(data_col)
+  names_temp <- as.numeric(names(table_temp))
+  counts_temp <- matrix(0, nrow = nrow, ncol = 1)
+  
+  ## fills rows 1, 2, and 3 (fomerly 0, 1, and 2 prior coding) will count values from table
+  ## where the value doesn't exist in column (e.g., no hets, only 1 hom), by default will be zero 
+  for (i in names_temp){
+    counts_temp[i+1, 1] <- table_temp[as.character(i)]
+  }
+  
+  ## take the minimum of resulting column excluding het row (2)
+  min_allele <- which.min(counts_temp[-2, 1])
+  ## if min_allele found in first row then minor_allele is 0 from prior coding, otherwise 2
+  minor_allele <- ifelse(min_allele == 1, 0, 2)
+
+  return(minor_allele)
+}
+
+## determines if each cell contains major allele, minor allele or het
+xa_coding <- function(input, minor_allele){
+  if (input == minor_allele){
+    return(-1)
+  }
+  else {
+    return(ifelse(input == 1, 0, 1))
+  }
+}
+
+## initializes matrix full of NA's with same dim as geno
+xa_matrix <- matrix(NA, nrow = n_rows, ncol = n_cols)
+
+## creates Xa matrix using above functions
+for (i in seq(n_cols)){
+  minor_allele <- find_counts(geno[, i])
+  xa_matrix[, i] <- mapply(xa_coding, geno[, i], minor_allele)
+}
+
+xa_matrix[1:5, 1:5]
+
+xd_matrix <- 1 - 2*abs(xa_matrix)
+
+save(covars, pheno, geno, gene_info, snp_info, xa_matrix, xd_matrix, 
+     file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/geuvadis.rda")
+```
+
+```{r load_data, message=FALSE, warning=FALSE, echo=FALSE}
+load(file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/geuvadis.rda")
+
+n_rows <- nrow(geno)
+n_cols <- ncol(geno)
+```
+
+\break
+
+# Introduction
+
+The Genetic European Variation in Disease (gEUVADIS) consortium produced genome and RNA sequencing data from a subset of samples from the 1000 Genomes project.^[Lappalainen, T., et al. Transcriptome and genome sequencing uncovers functional variation in humans. Nature 501, 506-511 (2013).
+]  This included data from 5 populations surveyed, including the CEPH (CEU) or Utah residents with Northern and Western European ancestry, Finns (FIN), British (GBR), Toscani (TSI) and Yoruba (YRI).^[Resource, T.I.G.S. Geuvadis. (2020).]   
+
+Here, a subset of the gEUVADIS data containing `r format(n_cols, big.mark = ",", scientific = FALSE)` SNPs and `r format(n_rows, big.mark = ",", scientific = FALSE)` individuals was analyzed.  An expression quantitative trait loci (eQTL) analysis was performed using the expression levels of `r length(gene_info$symbol)` transcripts, `r gene_info$symbol`. 
+
+# Data pre-processing
+
+The initial genotype matrix contained the following coding: 0 (homozygote 1; A~1~A~1~), 1 (heterozygote; A~1~A~2~ or A~2~A~1~), and 2 (homozygote 2; A~2~A~2~).  This required conversion to a X~a~ (-1: minor allele homozygote, 0: heterozygote, 1: major allele homozygote) and X~d~ (-1: homozygotes, 1: heterozygotes) matrices.
+
+# Exploratory data analysis
+
+## Missing data
+
+To ensure that the eQTL analysis is adequately powered, missing data must be accounted for.  Normally, individuals with >10% missing data across all genotypes and genotypes with >5% missing data across the entire population would be removed from the analysis.  There were no missing data in this data set.
+
+```{r missing_data, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+sum(is.na(pheno))
+sum(is.na(geno))
+sum(is.na(covars))
+```
+
+## Distribution of phenotypes
+
+The phenotypes or the expression levels of the selected five genes appears to have already been normalized, as their summary statistics are identical, as shown below.  Therefore, no pre-processing was necessary.
+
+```{r pheno_hist, message=FALSE, warning=FALSE, echo=FALSE}
+pheno_gather <- pheno %>% gather()
+
+pheno_gather <- merge(pheno_gather, gene_info[, c(1, 5)], 
+                      by.x = c("key"), 
+                      by.y = c("probe"))
+
+pheno_gather <- cbind(as.data.frame(pheno_gather$symbol),
+                      as.data.frame(pheno_gather$value))
+
+colnames(pheno_gather) <- c("symbol", "value")
+
+pheno_summary <- tapply(pheno_gather$value, pheno_gather$symbol, summary)
+row_names <- names(pheno_summary)
+Min <- as.numeric(lapply(pheno_summary, `[[`, 1))
+Quartile_1 <- as.numeric(lapply(pheno_summary, `[[`, 2))
+Median <- as.numeric(lapply(pheno_summary, `[[`, 3))
+Mean <- Median <- as.numeric(lapply(pheno_summary, `[[`, 4))
+Quartile_3 <- as.numeric(lapply(pheno_summary, `[[`, 5))
+Max <- as.numeric(lapply(pheno_summary, `[[`, 6))
+df.pheno_summary <- as.data.frame(cbind(Min, Quartile_1, Median, Mean, 
+                                        Quartile_3, Max), 
+                                  row.names = row_names)
+
+knitr::kable(df.pheno_summary)
+
+# p <- pheno_gather %>%
+#   ggplot(aes(value)) + 
+#   geom_histogram(bins = 10) + 
+#   facet_wrap(~symbol) + 
+#   scale_x_continuous(name = "Normalized gene expression levels") + 
+#   scale_y_continuous(name = "Count")  
+
+# print(p)
+```
+
+Below is a table summarizing the locations and the functions of the genes of interest.^[Gene [Internet]. Bethesda (MD): National Library of Medicine (US), National Center for Biotechnology Information; 2004 – [cited 2020 May 12]. Available from: https://www.ncbi.nlm.nih.gov/gene/]  
+
+| Symbol  	| Description                                                                                   	| Chr 	| Start        	| End          	|
+|---------	|-----------------------------------------------------------------------------------------------	|-----	|--------------	|--------------	|
+| ERAP2   	| Encodes a zinc metalloaminopeptidase in the endoplasmic reticulum                             	| 5   	| 96,875,939   	| 96,919,716   	|
+| FAHD1   	| Encodes oxaloacetate decarboxylase                                                            	| 16  	| 1,827,224    	| 1,840,207    	|
+| GFM1    	| Encodes one of the mitochondrial translation elongation factors                               	| 3   	| 158,644,527  	| 158,695,581  	|
+| MARCHF7 	| Encodes membrane-bound E3 ubiquitin ligase                                                    	| 2   	| 159,712,494  	| 159,771,027  	|
+| PEX6    	| Encodes a member of the ATPases associated with diverse cellular activities family of ATPases 	| 6   	| 42,963,865   	| 42,980,224   	|
+
+## Demographic and sex covariates
+
+We can see that this subset includes 4 of the 5 populations contained in the Geuvadis data set, which are summarized below.
+
+|**Code**|**Population**|**Description**                                                         |
+|:------:|:------------:|:--------------------------------------------------------------------|
+|  GBR   |  British     | British in England and Scotland                                     |
+|  CEU   | CEPH       | Utah residents (CEPH) with Northern and Western European   ancestry |
+|  FIN   |  Finnish     | Finnish in Finland                                                  |
+|  TSI   |  Toscani     | Toscani in Italy                                                    |
+
+Additionally, we can see that these populations are represented in the data set in roughly similar proportions.  Finally, while the sex cohorts are similarly balanced overall, in the Finish cohort, there are over 50% more females subjects than male subjects.
+
+Additionally, I ensured the sex and population data was formatted as factors, enabling their inclusion in the downstream analyses without additional coding.
+
+```{r covar_tbl, message=FALSE, error=FALSE, echo=FALSE}
+covar_tbl <- table(covars)
+
+## calc row sums and percentages
+row_total <- rowSums(covar_tbl)
+row_pct <- percent(rowSums(covar_tbl)/sum(covar_tbl))
+
+## calc col sums and percentages
+col_total <- c(colSums(covar_tbl), "", "")
+col_pct <- c(percent(colSums(covar_tbl)/sum(covar_tbl)), "", "")
+
+## add total and % total columns
+covar_tbl <- cbind(covar_tbl, row_total, row_pct)
+covar_tbl <- rbind(covar_tbl, col_total, col_pct)
+colnames(covar_tbl)[3:4] <- c("Total", "% Total")
+rownames(covar_tbl)[5:6] <- c("Total", "% Total")
+covar_tbl[nrow(covar_tbl)-1, ncol(covar_tbl)-1] <- 
+  sum(as.numeric(covar_tbl[, ncol(covar_tbl)-1]), na.rm = TRUE)
+
+covar_tbl %>% knitr::kable()
+```
+
+## Minor allele frequency (MAF)
+
+```{r maf, echo=FALSE, warning=FALSE, message=FALSE, fig.width = 5, fig.asp = .5}
+## assess minor allele frequency
+maf <- as.data.frame(apply(xa_matrix, 2, 
+                           function(x)sum(x == -1)))
+colnames(maf) <- "frequency"
+maf_per <- as.data.frame(maf / dim(xa_matrix)[1])
+colnames(maf_per) <- "percent"
+# knitr::kable(summary(maf_per*100))
+
+p <- maf_per %>%
+  ggplot(aes(percent)) + 
+  stat_bin(binwidth = 0.025) + 
+  stat_bin(binwidth=0.025, geom="text", aes(label=..count..), 
+           vjust=-1.5, size = 2.5) +
+  xlab("Minor allele frequency") +
+  ylab("Frequency") +
+  scale_x_continuous() +
+  scale_y_continuous(label=comma, limits=c(0, 11000))
+
+maf_threshold <- 0.05
+idx_maf <- which(maf_per < maf_threshold)
+xa_matrix_rev <- xa_matrix[, -idx_maf]
+xd_matrix_rev <- xd_matrix[, -idx_maf]
+n_cols_rev <- dim(xa_matrix_rev)[2]
+
+print(p)
+```
+
+In an eQTL analysis, MAFs that are too low result in a reduction in the statistical power of the test.  As such, they should be removed prior to the analysis.
+
+Given that `r format(length(idx_maf), big.mark = ",", scientific = FALSE)` individual SNPs fall below the threshold of `r percent(maf_threshold, digits = 1)` given by Dr. Mezey, I removed these SNPs for the purposes of the downstream analysis.  
+
+## Principal components analysis (PCA)
+
+Initially, I performed a PCA without removing SNPs whose MAF fell below the `r percent(maf_threshold, digits = 1)` threshold (*not shown*).  In this analysis, the clustering was more spread out, particularly for the PC2 of the GBR and FIN populations, which appeared to show a potential sex effect with female subjects extending far in the negative direction of PC2.  
+
+After removing SNPs with low MAFs, the clusters are much more confined (*shown below*).  According to the 2000 census, Utah had the highest percentage of English ancestry of any state at 29%.^[Brittingham, A. & de la Cruz, G.P. Ancestry: 2000. (2004).]  Given the preponderance of British ancestry among this cohort, the degree of overlap between the CEU and the GBR clusters is not suprising.  The TSI cluster seems to be the most self-contained, with the Finish cohort being the most spread out.
+
+This observation illustrates the importance of pre-processing the data to remove SNPs with low MAFs.  
+
+```{r pca, message=FALSE, warning=FALSE, echo=FALSE, fig.width = 7.5, fig.asp = .4}
+pca <- prcomp(xa_matrix_rev%*%t(xa_matrix_rev))
+df.pca <- as.data.frame(cbind(pca$x[, 1], pca$x[, 2]))
+colnames(df.pca) <- c("PC1", "PC2")
+df.pca$id <- rownames(geno)
+df.pca <- merge(df.pca, covars,
+                by.x = c("id"),
+                by.y = 0)
+pheno_cols <- colnames(pheno)
+pheno_cols <- unlist(lapply(pheno_cols, 
+                            function(x) gene_info$symbol[which(gene_info$probe == x)]))
+pheno_temp <- pheno
+colnames(pheno_temp) <- pheno_cols
+df.pca <- cbind(df.pca, pheno_temp)
+
+p1 <- df.pca %>%
+  ggplot(aes(x = PC1, y = PC2)) + 
+  geom_point(aes(color = Population)) +
+  theme(legend.position="bottom")
+
+p2 <- df.pca %>%
+  ggplot(aes(x = PC1, y = PC2)) + 
+  geom_point(aes(color = Sex)) +
+  theme(legend.position="bottom")
+
+# p3 <- df.pca %>%
+#   ggplot(aes(x = PC1, y = PC2)) + 
+#   geom_point(aes(color = ERAP2))
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+# eQTL Analysis
+
+For the various eQTL analyses below, I followed the same procedures.  I used the `lm()` function to perform a multiple linear regression of the level of each transcripts' expression for the five given genes at each polymorphic site on the X~a~ matrix and the X~d~ matrix.  For the analyses noted below, I also included additional covariates, including sex and/or population.  Then I extracted the F-statistic and calculated an associated p-value.  Finally, I performed multiple hypothesis test correction using the more stringent Bonferroni method.  
+
+For each combination of covariates tested, Manhattan plots were generated to visualize the sites of significant SNPs.  Additionally, QQ-plots were generated to ensure that the significant SNPs can be interpreted as potential causal polymorphisms.  For reasons discussed in the **[Summary of eQTL analysis with covariates]**, these plots are only shown for the model using sex and population as covariates.  
+
+```{r pval_fn, message=FALSE, warning=FALSE, echo=FALSE}
+## enter dependent variable and as many independent variables as a list
+## http://www.win-vector.com/blog/2018/09/r-tip-how-to-pass-a-formula-to-lm/
+## ex: find_pval(pheno[, 2], list(xa_matrix[, 3], xd_matrix[, 3]))
+find_pval <- function(dependent, independent){
+  y <- "dependent"
+  
+  variables <- paste("V", seq(length(independent)), sep = "")
+  for (n in seq(length(variables))){
+    assign(variables[n], independent[[n]])
+  }
+  
+  regression.df <- data.frame(dependent)
+  regression.df[as.character(variables)] <- mget(variables)
+
+  f <- as.formula(paste(y,
+                        paste(variables, collapse = " + "),
+                        sep = "~"))
+  model <- eval(bquote(   lm(.(f), data = regression.df)   ))
+  fstats <- summary(model)$fstatistic
+  pval_total <- pf(fstats[1],fstats[2],fstats[3],lower.tail=FALSE)
+  pval_coeff <- summary(model)$coefficients[2:(1+length(variables)), 4]
+  return(list(pval_total, pval_coeff))
+}
+```
+
+## No Covariates
+
+Initially, an eQTL analysis was performed on the five transcript expression levels at each polymorphic site without the inclusion of any additional covariates.  The result was the identification of potential sites of causal polymorphisms for ERAP2, FAHD1, and PEX6, but not for the GFM1 and MARCHF7 genes.  This was a consistent observation across all models.  
+
+```{r no_covar_calc, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+pval_no_covar <- matrix(NA, nrow = n_cols_rev, 
+                        ncol = length(pheno),
+                        dimnames = list(colnames(geno[, -idx_maf]), 
+                                        colnames(pheno)))
+
+for (j in seq(length(pheno))){
+  for (i in seq(n_cols_rev)){
+    pval_no_covar[i, j] <- find_pval(pheno[, j], list(xa_matrix_rev[, i],
+                                                      xd_matrix_rev[, i]))[[1]]
+  }
+}
+
+pval_no_covar_adj <- apply(pval_no_covar, 2, 
+                           p.adjust, method = "bonferroni")
+pval_no_covar_adj <- as.data.frame(pval_no_covar_adj)
+
+save(pval_no_covar, pval_no_covar_adj,
+     file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/no_covar.rda")
+```
+
+```{r no_covar_manhattan, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+load(file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/no_covar.rda")
+
+## manipulate from wide to long format matrix for ggplot
+df.pval_no_covar_adj <- pval_no_covar_adj %>% melt()
+df.pval_no_covar_adj <- as.data.frame(df.pval_no_covar_adj)
+colnames(df.pval_no_covar_adj) <- c("gene_id", "value")
+df.pval_no_covar_adj$snp <- rep(rownames(pval_no_covar_adj), 5)
+df.pval_no_covar_adj$rel_pos <- rep(seq(n_cols_rev), 5)
+
+df.pval_no_covar_adj <- merge(df.pval_no_covar_adj, gene_info[, c(1, 5)],
+                              by.x = c("gene_id"),
+                              by.y = c("probe"))
+
+df.pval_no_covar_adj <- merge(df.pval_no_covar_adj, snp_info,
+                              by.x = c("snp"),
+                              by.y = c("id"))
+
+df.pval_no_covar_adj <- df.pval_no_covar_adj[order(df.pval_no_covar_adj$gene_id,
+                                                   df.pval_no_covar_adj$rel_pos), ]
+
+df.pval_no_covar_adj$chr_color <- as.factor(df.pval_no_covar_adj$chromosome %% 2)
+df.pval_no_covar_adj$pval_adj_log10 <- -log10(df.pval_no_covar_adj$value)
+
+p <- ggplot(df.pval_no_covar_adj, aes(x = rel_pos, y=pval_adj_log10)) + 
+  geom_point(aes(color = chr_color)) +
+  facet_wrap(~symbol, scales = "free") +
+  geom_hline(yintercept = -log10(0.05), color = "black", linetype = "dashed") +
+  guides(color=FALSE) +
+  ylab("Bonferroni-adjusted p-value, -log10") +
+  xlab("Polymorphic site") + 
+  theme(axis.text.x = element_text(angle=90, hjust=1), 
+        axis.text=element_text(size=6)) +
+  scale_x_continuous(label=comma)
+
+print(p)
+```
+
+```{r no_covar_qqplot, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+pval_no_covar_log10 <- as.data.frame(-log10(pval_no_covar))
+colnames(pval_no_covar_log10) <- pheno_cols
+df.pval_no_covar_log10 <- pval_no_covar_log10 %>% melt()
+colnames(df.pval_no_covar_log10) <- c("symbol", "value")
+
+ggplot(df.pval_no_covar_log10, aes(sample = value)) +
+  stat_qq() +
+  facet_wrap(~symbol, scales = "free") +
+  stat_qq_line(col=2)
+```
+
+```{r no_covar_sig, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+load(file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/no_covar.rda")
+
+for (n in 1:length(pval_no_covar_adj)){
+  cat("There are", format(sum(pval_no_covar_adj[, n]<0.05), big.mark = ","),
+      "significant Bonferroni-corrected SNPs associated with the level of", 
+      gene_info$symbol[which(gene_info$probe ==
+                               colnames(pval_no_covar_adj)[n])], 
+      "expression \n")
+}
+```
+
+```{r no_covar_sig_load, message=FALSE, warning=FALSE, echo=FALSE}
+load(file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/no_covar.rda")
+```
+
+Following the multiple linear regression without covariates and with multiple hypothesis correction via the Bonferroni method, there are `r format(sum(pval_no_covar_adj[, 1]<0.05), big.mark = ",")` signficant polymorphisms for `r pheno_cols[1]`, `r format(sum(pval_no_covar_adj[, 3]<0.05), big.mark = ",")` signficant polymorphisms for `r pheno_cols[3]`, `r format(sum(pval_no_covar_adj[, 2]<0.05), big.mark = ",")` signficant polymorphisms for `r pheno_cols[2]`.  There were no identified statistically significant polymorphisms for `r pheno_cols[4]` or `r pheno_cols[5]`.  
+
+## Sex as a covariate
+
+```{r sex_covar_calc, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+pval_sex_covar <- matrix(NA, nrow = n_cols_rev, 
+                        ncol = length(pheno),
+                        dimnames = list(colnames(geno[, -idx_maf]), 
+                                        colnames(pheno)))
+
+pval_sex_covar_coeff <- matrix(NA, nrow = n_cols_rev,
+                               ncol = length(pheno),
+                               dimnames = list(colnames(geno[, -idx_maf]),
+                                               colnames(pheno)))
+
+for (j in seq(length(pheno))){
+  for (i in seq(n_cols_rev)){
+    sex_find_pval <- find_pval(pheno[, j], list(xa_matrix_rev[, i],
+                                                xd_matrix_rev[, i],
+                                                covars$Sex))
+    pval_sex_covar[i, j] <- sex_find_pval[[1]]
+    pval_sex_covar_coeff[i, j] <- sex_find_pval[[2]][3]
+  }
+}
+
+pval_sex_covar_adj <- apply(pval_sex_covar, 2, p.adjust, method = "bonferroni")
+pval_sex_covar_adj <- as.data.frame(pval_sex_covar_adj)
+
+save(pval_sex_covar, pval_sex_covar_adj, pval_sex_covar_coeff,
+     file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/sex_covar.rda")
+```
+
+```{r sex_covar_manhattan, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+load(file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/sex_covar.rda")
+
+## manipulate from wide to long format matrix for ggplot
+df.pval_sex_covar_adj <- pval_sex_covar_adj %>% melt()
+df.pval_sex_covar_adj <- as.data.frame(df.pval_sex_covar_adj)
+colnames(df.pval_sex_covar_adj) <- c("gene_id", "value")
+df.pval_sex_covar_adj$snp <- rep(rownames(pval_sex_covar_adj), 5)
+df.pval_sex_covar_adj$rel_pos <- rep(seq(n_cols_rev), 5)
+df.pval_sex_covar_adj <- merge(df.pval_sex_covar_adj, gene_info[, c(1, 5)],
+                               by.x = c("gene_id"),
+                               by.y = c("probe"))
+df.pval_sex_covar_adj <- merge(df.pval_sex_covar_adj, snp_info,
+                               by.x = c("snp"),
+                               by.y = c("id"))
+df.pval_sex_covar_adj <- df.pval_sex_covar_adj[order(df.pval_sex_covar_adj$gene_id,                                                     df.pval_sex_covar_adj$rel_pos), ]
+df.pval_sex_covar_adj$chr_color <- as.factor(df.pval_sex_covar_adj$chromosome %% 2)
+df.pval_sex_covar_adj$pval_adj_log10 <- -log10(df.pval_sex_covar_adj$value)
+
+p <- ggplot(df.pval_sex_covar_adj, aes(x = rel_pos, y=pval_adj_log10)) + 
+  geom_point(aes(color = chr_color)) +
+  facet_wrap(~symbol, scales = "free") +
+  geom_hline(yintercept = -log10(0.05), color = "black", linetype = "dashed") +
+  guides(color=FALSE) +
+  ylab("Bonferroni-adjusted p-value, -log10") +
+  xlab("Polymorphic site") + 
+  theme(axis.text.x = element_text(angle=90, hjust=1), 
+        axis.text=element_text(size=6)) +
+  scale_x_continuous(label=comma)
+
+print(p)
+```
+
+```{r sex_covar_qqplot, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+pval_sex_covar_log10 <- as.data.frame(-log10(pval_sex_covar))
+colnames(pval_sex_covar_log10) <- pheno_cols
+df.pval_sex_covar_log10 <- pval_sex_covar_log10 %>% melt()
+colnames(df.pval_sex_covar_log10) <- c("symbol", "value")
+
+ggplot(df.pval_sex_covar_log10, aes(sample = value)) +
+  stat_qq() +
+  facet_wrap(~symbol, scales = "free") +
+  stat_qq_line(col=2)
+```
+
+```{r sex_covar_coeff, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+pval_sex_covar_coeff_adj <- apply(pval_sex_covar_coeff, 2, 
+                                  p.adjust, method = "BH")
+colnames(pval_sex_covar_coeff_adj) <- pheno_cols
+for (n in seq(dim(pval_sex_covar_coeff_adj)[2])){
+  cat("Summary statistics for sex as covar for",
+      colnames(pval_sex_covar_coeff_adj)[n], "\n")
+  print(summary(pval_sex_covar_coeff_adj[, n]))
+}
+```
+
+```{r sex_covar_sig, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+load(file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/sex_covar.rda")
+
+for (n in 1:length(pval_sex_covar_adj)){
+  cat("There are", format(sum(pval_sex_covar_adj[, n]<0.05), big.mark = ","),
+      "significant Bonferroni-corrected SNPs associated with the level of", 
+      gene_info$symbol[which(gene_info$probe ==
+                               colnames(pval_sex_covar_adj)[n])], 
+      "expression \n")
+}
+```
+
+```{r sex_covar_sig_load, message=FALSE, warning=FALSE, echo=FALSE}
+load(file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/sex_covar.rda")
+```
+
+Following the multiple linear regression without sex as a covariate and with multiple hypothesis correction via the Bonferroni method, there are `r format(sum(pval_sex_covar_adj[, 1]<0.05), big.mark = ",")` signficant polymorphisms for `r pheno_cols[1]`, `r format(sum(pval_sex_covar_adj[, 3]<0.05), big.mark = ",")` signficant polymorphisms for `r pheno_cols[3]`, `r format(sum(pval_sex_covar_adj[, 2]<0.05), big.mark = ",")` signficant polymorphisms for `r pheno_cols[2]`.  There were no identified statistically significant polymorphisms for `r pheno_cols[4]` or `r pheno_cols[5]`.  
+
+## Population as a covariate
+
+```{r pop_covar_calc, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+pval_pop_covar <- matrix(NA, nrow = n_cols_rev,
+                         ncol = length(pheno),
+                         dimnames = list(colnames(geno[, -idx_maf]), 
+                                         colnames(pheno)))
+
+pval_pop_covar_coeff <- matrix(NA, nrow = n_cols_rev,
+                               ncol = length(pheno),
+                               dimnames = list(colnames(geno[, -idx_maf]),
+                                               colnames(pheno)))
+
+for (j in seq(length(pheno))){
+  for (i in seq(n_cols_rev)){
+    pop_find_pval <- find_pval(pheno[, j], list(xa_matrix_rev[, i],
+                                                xd_matrix_rev[, i],
+                                                covars$Population))
+
+    pval_pop_covar[i, j] <- pop_find_pval[[1]]
+    pval_pop_covar_coeff[i, j] <- pop_find_pval[[2]][3]
+  }
+}
+
+pval_pop_covar_adj <- apply(pval_pop_covar, 2, 
+                            p.adjust, method = "bonferroni")
+pval_pop_covar_adj <- as.data.frame(pval_pop_covar_adj)
+
+save(pval_pop_covar, pval_pop_covar_adj, pval_pop_covar_coeff,
+     file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/pop_covar.rda")
+```
+
+```{r pop_covar_manhattan, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+load(file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/pop_covar.rda")
+
+## manipulate from wide to long format matrix for ggplot
+df.pval_pop_covar_adj <- pval_pop_covar_adj %>% melt()
+df.pval_pop_covar_adj <- as.data.frame(df.pval_pop_covar_adj)
+colnames(df.pval_pop_covar_adj) <- c("gene_id", "value")
+df.pval_pop_covar_adj$snp <- rep(rownames(pval_pop_covar_adj), 5)
+df.pval_pop_covar_adj$rel_pos <- rep(seq(n_cols_rev), 5)
+
+df.pval_pop_covar_adj <- merge(df.pval_pop_covar_adj, gene_info[, c(1, 5)],
+                               by.x = c("gene_id"),
+                               by.y = c("probe"))
+
+df.pval_pop_covar_adj <- merge(df.pval_pop_covar_adj, snp_info,
+                               by.x = c("snp"),
+                               by.y = c("id"))
+df.pval_pop_covar_adj <- df.pval_pop_covar_adj[order(df.pval_pop_covar_adj$gene_id,
+                                                     df.pval_pop_covar_adj$rel_pos), ]
+
+df.pval_pop_covar_adj$chr_color <- as.factor(df.pval_pop_covar_adj$chromosome %% 2)
+df.pval_pop_covar_adj$pval_adj_log10 <- -log10(df.pval_pop_covar_adj$value)
+
+p <- ggplot(df.pval_pop_covar_adj, aes(x = rel_pos, y=pval_adj_log10)) + 
+  geom_point(aes(color = chr_color)) +
+  facet_wrap(~symbol, scales = "free") +
+  geom_hline(yintercept = -log10(0.05), color = "black", linetype = "dashed") +
+  guides(color=FALSE) +
+  ylab("Bonferroni-adjusted p-value, -log10") +
+  xlab("Polymorphic site") + 
+  theme(axis.text.x = element_text(angle=90, hjust=1), 
+        axis.text=element_text(size=6)) +
+  scale_x_continuous(label=comma)
+
+print(p)
+```
+
+```{r pop_covar_qqplot, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+pval_pop_covar_log10 <- as.data.frame(-log10(pval_pop_covar))
+colnames(pval_pop_covar_log10) <- pheno_cols
+df.pval_pop_covar_log10 <- pval_pop_covar_log10 %>% melt()
+colnames(df.pval_pop_covar_log10) <- c("symbol", "value")
+
+ggplot(df.pval_pop_covar_log10, aes(sample = value)) +
+  stat_qq() +
+  facet_wrap(~symbol, scales = "free") +
+  stat_qq_line(col=2)
+```
+
+```{r pop_covar_coeff, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+pval_pop_covar_coeff_adj <- apply(pval_pop_covar_coeff, 2, 
+                                  p.adjust, method = "BH")
+colnames(pval_pop_covar_coeff_adj) <- pheno_cols
+for (n in seq(dim(pval_pop_covar_coeff_adj)[2])){
+  cat("Summary statistics for population as covar for",
+      colnames(pval_pop_covar_coeff_adj)[n], "\n")
+  print(summary(pval_pop_covar_coeff_adj[, n]))
+}
+```
+
+```{r pop_covar_sig, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+load(file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/pop_covar.rda")
+
+for (n in 1:length(pval_pop_covar_adj)){
+  cat("There are", format(sum(pval_pop_covar_adj[, n]<0.05), big.mark = ","),
+      "significant Bonferroni-corrected SNPs associated with the level of", 
+      gene_info$symbol[which(gene_info$probe ==
+                               colnames(pval_pop_covar_adj)[n])], 
+      "expression \n")
+}
+```
+
+```{r pop_covar_sig_load, message=FALSE, warning=FALSE, echo=FALSE}
+load(file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/pop_covar.rda")
+```
+
+Following the multiple linear regression with population as a covariate and with multiple hypothesis correction via the Bonferroni method, there are `r format(sum(pval_pop_covar_adj[, 1]<0.05), big.mark = ",")` signficant polymorphisms for `r pheno_cols[1]`, `r format(sum(pval_pop_covar_adj[, 3]<0.05), big.mark = ",")` signficant polymorphisms for `r pheno_cols[3]`, `r format(sum(pval_pop_covar_adj[, 2]<0.05), big.mark = ",")` signficant polymorphisms for `r pheno_cols[2]`.  There were no identified statistically significant polymorphisms for `r pheno_cols[4]` or `r pheno_cols[5]`.  
+
+## PC as covariate
+
+To assess the number of PCs to include as covariates, I used two common methods: assessing how many PCs were needed to explain 80% of the variance and the "elbow method."  To visualize the relative contribution of each principal component to the percent variance explained, I constructed a scree plot, shown below.  
+
+Given how little of the variance is explained unless many principal components are included, I opted not include the PCs as a covariate in the model.    
+```{r scree, message=FALSE, warning=FALSE, echo=FALSE, fig.width = 7, fig.asp=0.4}
+par(mar = c(4, 4, 2, 4))
+pc_var <- pca$sdev^2
+prop_var_ex <- pc_var/sum(pc_var)
+plot(prop_var_ex,
+     main = "Scree Plot",
+     xlab = "Principal Component",
+     ylab = "% Variance Explained",
+     type = "b",
+     cex.lab = 1,
+     cex.axis=1)
+scree_cut = 6
+abline(v = scree_cut, col = "red", lwd = 1)
+
+threshold <- 0.8
+cum_var_ex <- numeric(1)
+i <- 1
+while (cum_var_ex < threshold){
+  cum_var_ex <- sum(prop_var_ex[1:i])
+  i <- i + 1
+}
+
+cat(percent(threshold), "of the variance is explained by the first", 
+      i, "principal components.")
+
+cat(percent(sum(prop_var_ex[1:scree_cut])), 
+    "of the variance is explained by the first", 
+      scree_cut, "principal components.")
+
+pc_include <- as.data.frame(pca$x[, 1])
+pc_include <- as.list(pc_include)
+```
+
+```{r pc_covar_calc, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+pval_pc_covar <- matrix(NA, nrow = n_cols_rev,
+                        ncol = length(pheno),
+                        dimnames = list(colnames(geno[, -idx_maf]), 
+                                         colnames(pheno)))
+
+for (j in seq(length(pheno))){
+  for (i in seq(n_cols_rev)){
+    pval_pc_covar[i, j] <- find_pval(pheno[, j], c(list(xa_matrix_rev[, i],
+                                                        xd_matrix_rev[, i]),
+                                                   pc_include))[[1]]
+  }
+}
+
+pval_pc_covar_adj <- apply(pval_pc_covar, 2,
+                           p.adjust, method = "bonferroni")
+pval_pc_covar_adj <- as.data.frame(pval_pc_covar_adj)
+
+for (n in 1:length(pval_pc_covar_adj)){
+  cat("There are", format(sum(pval_pc_covar_adj[, n]<0.05), big.mark = ","),
+      "significant Bonferroni-corrected SNPs associated with the level of", 
+      gene_info$symbol[which(gene_info$probe ==
+                               colnames(pval_pc_covar_adj)[n])], 
+      "expression \n")
+}
+```
+
+```{r pc_covar_manhattan, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+## manipulate from wide to long format matrix for ggplot
+df.pval_pc_covar_adj <- pval_pc_covar_adj %>% melt()
+df.pval_pc_covar_adj <- as.data.frame(df.pval_pc_covar_adj)
+colnames(df.pval_pc_covar_adj) <- c("gene_id", "value")
+df.pval_pc_covar_adj$snp <- rep(rownames(pval_pc_covar_adj), 5)
+df.pval_pc_covar_adj$rel_pos <- rep(seq(n_cols_rev), 5)
+
+df.pval_pc_covar_adj <- merge(df.pval_pc_covar_adj, gene_info[, c(1, 5)],
+                              by.x = c("gene_id"),
+                              by.y = c("probe"))
+
+df.pval_pc_covar_adj <- merge(df.pval_pc_covar_adj, snp_info,
+                              by.x = c("snp"),
+                              by.y = c("id"))
+df.pval_pc_covar_adj <- df.pval_pc_covar_adj[order(df.pval_pc_covar_adj$gene_id,
+                                                     df.pval_pc_covar_adj$rel_pos), ]
+
+df.pval_pc_covar_adj$chr_color <- as.factor(df.pval_pc_covar_adj$chromosome %% 2)
+df.pval_pc_covar_adj$pval_adj_log10 <- -log10(df.pval_pc_covar_adj$value)
+
+p <- ggplot(df.pval_pc_covar_adj, aes(x = rel_pos, y=pval_adj_log10)) + 
+  geom_point(aes(color = chr_color)) +
+  facet_wrap(~symbol, scales = "free") +
+  geom_hline(yintercept = -log10(0.05), color = "black", linetype = "dashed") +
+  guides(color=FALSE) +
+  ylab("Bonferroni-adjusted p-value, -log10") +
+  xlab("Polymorphic site") + 
+  theme(axis.text.x = element_text(angle=90, hjust=1), 
+        axis.text=element_text(size=6)) +
+  scale_x_continuous(label=comma)
+
+print(p)
+```
+
+## Sex and population as covariates
+
+Ultimately, I chose to to include both sex and population as covariates, a decision discussed further in the **[Summary of eQTL analysis with covariates]** section.  Below is the corresponding Manhattan plot for each gene of interest.  This indicates no potential causal polymorphisms were detected for the GFM1 and MARCHF7 genes.  For ERAP2, FAHD1, and PEX6, potentially causal polymorphisms were detected in single, constrained regions of the genome.   
+
+```{r sex_pop_covar_calc, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+pval_sex_pop_covar <- matrix(NA, nrow = n_cols_rev,
+                             ncol = length(pheno),
+                             dimnames = list(colnames(geno[, -idx_maf]), 
+                                        colnames(pheno)))
+
+pval_sex_pop_covar_coeff_sex <- matrix(NA, nrow = n_cols_rev,
+                                       ncol = length(pheno),
+                                       dimnames = list(colnames(geno[, -idx_maf]),
+                                                       colnames(pheno)))
+
+pval_sex_pop_covar_coeff_pop <- matrix(NA, nrow = n_cols_rev,
+                                       ncol = length(pheno),
+                                       dimnames = list(colnames(geno[, -idx_maf]),
+                                                       colnames(pheno)))
+
+for (j in seq(length(pheno))){
+  for (i in seq(n_cols_rev)){
+    sex_pop_find_pval <- find_pval(pheno[, j],
+                                   list(xa_matrix_rev[, i],
+                                        xd_matrix_rev[, i],
+                                        covars$Sex,
+                                        covars$Population))
+    
+    pval_sex_pop_covar[i, j] <- sex_pop_find_pval[[1]]
+    pval_sex_pop_covar_coeff_sex[i, j] <- sex_pop_find_pval[[2]][3]
+    pval_sex_pop_covar_coeff_pop[i, j] <- sex_pop_find_pval[[2]][4]
+  }
+}
+
+pval_sex_pop_covar_adj <- apply(pval_sex_pop_covar, 2,
+                                p.adjust, method = "bonferroni")
+pval_sex_pop_covar_adj <- as.data.frame(pval_sex_pop_covar_adj)
+
+save(pval_sex_pop_covar, pval_sex_pop_covar_adj, 
+     pval_sex_pop_covar_coeff_sex, pval_sex_pop_covar_coeff_pop,
+     file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/sex_pop_covar.rda")
+```
+
+```{r sex_pop_covar_manhattan, message=FALSE, warning=FALSE, echo=FALSE}
+load(file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/sex_pop_covar.rda")
+
+## manipulate from wide to long format matrix for ggplot
+df.pval_sex_pop_covar_adj <- pval_sex_pop_covar_adj %>% melt()
+df.pval_sex_pop_covar_adj <- as.data.frame(df.pval_sex_pop_covar_adj)
+colnames(df.pval_sex_pop_covar_adj) <- c("gene_id", "value")
+df.pval_sex_pop_covar_adj$snp <- rep(rownames(pval_sex_pop_covar_adj), 5)
+df.pval_sex_pop_covar_adj$rel_pos <- rep(seq(n_cols_rev), 5)
+df.pval_sex_pop_covar_adj <- merge(df.pval_sex_pop_covar_adj, gene_info[, c(1, 5)],
+                                   by.x = c("gene_id"),
+                                   by.y = c("probe"))
+df.pval_sex_pop_covar_adj <- merge(df.pval_sex_pop_covar_adj, snp_info,
+                                   by.x = c("snp"),
+                                   by.y = c("id"))
+df.pval_sex_pop_covar_adj <- df.pval_sex_pop_covar_adj[order(df.pval_sex_pop_covar_adj$gene_id,                                                     df.pval_sex_pop_covar_adj$rel_pos), ]
+df.pval_sex_pop_covar_adj$chr_color <- as.factor(df.pval_sex_pop_covar_adj$chromosome %% 2)
+df.pval_sex_pop_covar_adj$pval_adj_log10 <- -log10(df.pval_sex_pop_covar_adj$value)
+
+p <- ggplot(df.pval_sex_pop_covar_adj, aes(x = rel_pos, y=pval_adj_log10)) + 
+  geom_point(aes(color = chr_color)) +
+  facet_wrap(~symbol, scales = "free") +
+  geom_hline(yintercept = -log10(0.05), color = "black", linetype = "dashed") +
+  guides(color=FALSE) +
+  ylab("Bonferroni-adjusted p-value, -log10") +
+  xlab("Polymorphic site") + 
+  theme(axis.text.x = element_text(angle=90, hjust=1), 
+        axis.text=element_text(size=6)) +
+  scale_x_continuous(label=comma)
+
+print(p)
+```
+
+```{r sex_pop_covar_qqplot, message=FALSE, warning=FALSE, echo=FALSE}
+pval_sex_pop_covar_log10 <- as.data.frame(-log10(pval_sex_pop_covar))
+colnames(pval_sex_pop_covar_log10) <- pheno_cols
+df.pval_sex_pop_covar_log10 <- pval_sex_pop_covar_log10 %>% melt()
+colnames(df.pval_sex_pop_covar_log10) <- c("symbol", "value")
+df.pval_sex_pop_covar_log10$symbol <- as.character(df.pval_sex_pop_covar_log10$symbol)
+df.pval_sex_pop_covar_log10 <- df.pval_sex_pop_covar_log10[order(df.pval_sex_pop_covar_log10$symbol, df.pval_sex_pop_covar_log10$value), ]
+
+quantiles <- -log10(qunif(ppoints(n_cols_rev)))
+quantiles <- quantiles[order(quantiles)]
+df.pval_sex_pop_covar_log10$quantiles <- rep(quantiles, 5)
+
+p <- ggplot(df.pval_sex_pop_covar_log10, 
+            aes(quantiles, value)) + 
+  geom_point() + 
+  ylab("-log10(actual p-value)") +
+  xlab("-log10(theoretical p-value)") +
+  facet_wrap(~symbol, scales = "free") +
+  geom_abline(intercept = 0, slope = 1, color="red")
+
+# p <- ggplot(df.pval_sex_pop_covar_log10, aes(sample = value)) +
+#   stat_qq() +
+#   facet_wrap(~symbol, scales = "free") +
+#   stat_qq_line(col=2)
+
+print(p)
+```
+
+```{r sex_pop_covar_coeff, eval= FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+pval_sex_pop_covar_coeff_sex_adj <- apply(pval_sex_pop_covar_coeff_sex, 2,
+                                          p.adjust, method = "BH")
+colnames(pval_sex_pop_covar_coeff_sex_adj) <- pheno_cols
+for (n in seq(dim(pval_sex_pop_covar_coeff_sex_adj)[2])){
+  cat("Summary statistics for sex as covar when using sex and pop as covars for",
+      colnames(pval_sex_pop_covar_coeff_sex_adj)[n], "\n")
+  print(summary(pval_sex_pop_covar_coeff_sex_adj[, n]))
+}
+pval_sex_pop_covar_coeff_pop_adj <- apply(pval_sex_pop_covar_coeff_pop, 2,
+                                          p.adjust, method = "BH")
+colnames(pval_sex_pop_covar_coeff_pop_adj) <- pheno_cols
+for (n in seq(dim(pval_sex_pop_covar_coeff_pop_adj)[2])){
+  cat("Summary statistics for sex as covar when using sex and pop as covars for",
+      colnames(pval_sex_pop_covar_coeff_pop_adj)[n], "\n")
+  print(summary(pval_sex_pop_covar_coeff_pop_adj[, n]))
+}
+```
+
+```{r sex_pop_covar_sig, message=FALSE, warning=FALSE, echo=FALSE}
+# load(file = "C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/assets/sex_pop_covar.rda")
+
+for (n in 1:length(pval_sex_pop_covar_adj)){
+  cat("There are", format(sum(pval_sex_pop_covar_adj[, n]<0.05), big.mark = ","),
+      "significant Bonferroni-corrected SNPs associated with the level of", 
+      gene_info$symbol[which(gene_info$probe ==
+                               colnames(pval_sex_pop_covar_adj)[n])], 
+      "expression \n")
+}
+```
+
+The QQ-plots above confirm that the significant loci detected for ERAP2, FAHD1, and PEX6 can be interpreted as potentially causal polymorphisms.  This is because most of the p-values observed follow a uniform distribution and do not deviate from this line until the significant "tail."  In contrast, the QQ-plots for GFM1 and MARCHF7 indicate fewer significant p-values than would normally be expected.  Since there were no statistically significant causal polymorphisms found for either GFM1 or MARCHF7, this does not hinder interpretation.   
+
+Notably, these observations were true for all combinations of covariates included in the analysis.  With one exception, discussed further in  **[Summary of eQTL analysis with covariates]**, all of the statistically significant polymorphisms identified for each gene were confined to a constrained area on a single chromosome, and this region was identical for all analyses, as illustrated with successive Manhattan plots.  Statistically significant polymorphisms were never observed for GFM1 or MARCHF7, and the resulting QQ-plots revealed fewer statistically signficant findings than would be expected given a uniform distribution of p-values.  
+
+\break
+
+## Summary of eQTL analysis with covariates
+
+\begin{wrapfigure}{r}{0.5\textwidth}
+  \begin{center}
+    \includegraphics[width=0.5\textwidth]{C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/images/heatmaps.jpeg}
+  \end{center}
+  \caption{Heatmap of statistically significant polymorphic sites for various covariates}
+\end{wrapfigure}
+
+To the right are heatmaps illustrating how the inclusion of various covariates alters the number of significant SNPs observed.  Yellow indicates polymorphic sites that were found to be statistically significant given the procedure described above, and red indicates analyses in which the sites were not found to be statistically significant.  The rows indicate which covariates, if any, were included in the multiple regression analysis.  The columns indicate the chromosome and the position at which these polymorphisms were found.  
+
+In general, the inclusion of covariates is associated with a reduction in the observation of false positive causal polymorphisms.  However, the inclusion of the covariates of either sex alone or sex and population actually led to the inclusion of additional significant SNPs both within and at the end of the region already revealed to contain potential causal polymorphisms.  
+
+For FAHD1, the inclusion of sex as a covariate eliminated a single statistically significant causal polymorphism from within the identified region.  This did not apply when both sex and population were used as covariates.  
+
+Finally, and most importantly, for PEX6, when either no covariate or sex as a covariate were included, significant polymorphisms were found on both chromosome 4 and chromosome 6.  With the addition of either population or sex and population as covariates, the likely false positive polymorphism on chromosome 4 was no longer statistically signficant, leaving all other potentially causal polymorphisms on chromosome 6, which will be discussed further in **[Analysis of potential location of causal polymorphisms]**.
+
+For these reasons, for the purposes of additional downstream analyses, I used the model containing sex and population as covariates as the base model.  
+
+# Analysis of potential location of causal polymorphisms
+
+Following the multiple linear regression using sex and population as covariates and with multiple hypothesis correction via the Bonferroni method, there are `r format(sum(pval_sex_pop_covar_adj[, 1]<0.05), big.mark = ",")` signficant polymorphisms for `r pheno_cols[1]`, `r format(sum(pval_sex_pop_covar_adj[, 3]<0.05), big.mark = ",")` signficant polymorphisms for `r pheno_cols[3]`, `r format(sum(pval_sex_pop_covar_adj[, 2]<0.05), big.mark = ",")` signficant polymorphisms for `r pheno_cols[2]`.  
+
+The figure below illustrates the empirically identified polymorphisms from the eQTL analysis relative to the known position of the genes of interest per the GRCh38 reference genome.^[Gene [Internet]. Bethesda (MD): National Library of Medicine (US), National Center for Biotechnology Information;
+2004 – [cited 2020 May 12]. Available from: https://www.ncbi.nlm.nih.gov/gene/]  All statistically significant polymorphisms occur on the same chromosome as the gene of interest.  this also provides us with context that the additional polymorphisms associated with ERAP compared to the other two genes with potentially causal polymorphisms identified can be attributed to the relative size of the gene (`r (96919716-96875939)/1000`) and the fact that numerous SNPs included in the analysis lie directly in the gene body.  
+
+The two red markers denote the start and stop site of the known gene locations.  Note that in the below the -log10(p-value) values for the actual locations is shown for illustrative purposes only.
+
+To disaggregate the effects of linkage disequilibrium as compared to functional relationships between the polymorphisms, I attempted to characterize the relationship between the significant polymorphisms.  To do this, I determined the Pearson correlation of the X~a~.  I took the square of this value since negative correlations still imply a meaningful relationship in the context of the X~a~ matrix (e.g., a minor allele of one polymorphism could be associated with a major allele of another polymorphism, implying a direct relationship, but the value would be negative).
+
+The values of the resulting coefficients of determination for the various significant polymorphisms are illustrated in the form of an upper triangular heatmap, shown below.  Yellow denotes relationships characterized by linkage disequilibrium (i.e., highly correlated), and red denotes relationships that are relatively uncorrelated and suggest the alleles are not in linkage disequilibrium.  This suggests that the resulting relationships may in fact be functional in nature, and that the statistically significant relationship between gene expression and polymorphisms at these sites is attributable to something other than linkage disequilbrium.  
+
+Indeed, for ERAP2, there is a known downstream gene, LNPEP, which starts at position 96,934,859 and continues through position 97,037,513 that is known to be in linkage disequilibrium with the ERAP2 gene, particularly in the CEU European descendants population.  Similarly, there is an upstream regulatory region that is shared by ERAP2 and ERAP1, which is further upstream, but is not in linkage disequlibrium with the ERAP2 gene.  This regulatory relationship could explain the finding that they are statistically significantly related without seeming to be in linkage disequilibrium.^[Andrés, A.M., et al. Balancing selection maintains a form of ERAP2 that undergoes nonsense-mediated decay and affects antigen presentation. PLoS Genet 6, e1001157 (2010).]  
+
+Conceivably, similar relatioships could exist for the other genes and the statistically significant identified polymorphisms.  The distal, upstream elements are in linkage disequilbrium with their nearest neighbors, but this doesn't seem to extend to the body of the gene of interest, which could indicate a regulatory relationship.  For PEX6, neither the upstream nor downstream distal elements seem to be in linkage disequlibrium with SNPs in the gene body, which could similarly indicate a true functional relationship, regulatory or otherwise.   
+
+```{r erap2, message=FALSE, warning=FALSE, echo=FALSE}
+## check to make sure snp_info in same order as geno cols
+# identical(snp_info[, "id"], colnames(geno))
+
+## remove the dropped SNPs from snp_info
+snp_info_rev <- snp_info[-idx_maf, ]
+
+erap2 <- which(pheno_cols == "ERAP2")
+erap2_list_no <- which(pval_no_covar_adj[, erap2] < 0.05)
+erap2_list_sex <- which(pval_sex_covar_adj[, erap2] < 0.05)
+erap2_list_pop <- which(pval_pop_covar_adj[, erap2] < 0.05)
+erap2_list_sex_pop <- which(pval_sex_pop_covar_adj[, erap2] < 0.05)
+erap2_list_total <- unique(c(erap2_list_no, erap2_list_sex,
+                             erap2_list_pop, erap2_list_sex_pop))
+erap2_list_total <- erap2_list_total[order(erap2_list_total)]
+
+erap2_snp <- snp_info_rev$id[erap2_list_total]
+erap2_chr <- snp_info_rev$chromosome[erap2_list_total]
+erap2_position <- snp_info_rev$position[erap2_list_total]
+erap2_labels <- paste(erap2_chr, erap2_position, sep = "_")
+
+erap2_no_col <- as.numeric(erap2_list_total %in% erap2_list_no)
+erap2_sex_col <- as.numeric(erap2_list_total %in% erap2_list_sex)
+erap2_pop_col <- as.numeric(erap2_list_total %in% erap2_list_pop)
+erap2_sex_pop_col <- as.numeric(erap2_list_total %in% erap2_list_sex_pop)
+erap2_heatmap <- as.matrix(cbind(erap2_no_col, erap2_sex_col,
+                                 erap2_pop_col, erap2_sex_pop_col))
+rownames(erap2_heatmap) <- erap2_labels
+colnames(erap2_heatmap) <- c("No covar", "Sex covar",
+                             "Pop covar", "Sex and pop covar")
+```
+
+```{r pex6, message=FALSE, warning=FALSE, echo=FALSE}
+pex6 <- which(pheno_cols == "PEX6")
+pex6_list_no <- which(pval_no_covar_adj[, pex6] < 0.05)
+pex6_list_sex <- which(pval_sex_covar_adj[, pex6] < 0.05)
+pex6_list_pop <- which(pval_pop_covar_adj[, pex6] < 0.05)
+pex6_list_sex_pop <- which(pval_sex_pop_covar_adj[, pex6] < 0.05)
+
+pex6_list_total <- unique(c(pex6_list_no, pex6_list_sex,
+                            pex6_list_pop, pex6_list_sex_pop))
+pex6_list_total <- pex6_list_total[order(pex6_list_total)]
+
+pex6_snp <- snp_info_rev$id[pex6_list_total]
+pex6_chr <- snp_info_rev$chromosome[pex6_list_total]
+pex6_position <- snp_info_rev$position[pex6_list_total]
+pex6_labels <- paste(pex6_chr, pex6_position, sep = "_")
+
+pex6_no_col <- as.numeric(pex6_list_total %in% pex6_list_no)
+pex6_sex_col <- as.numeric(pex6_list_total %in% pex6_list_sex)
+pex6_pop_col <- as.numeric(pex6_list_total %in% pex6_list_pop)
+pex6_sex_pop_col <- as.numeric(pex6_list_total %in% pex6_list_sex_pop)
+pex6_heatmap <- as.matrix(cbind(pex6_no_col, pex6_sex_col,
+                                pex6_pop_col, pex6_sex_pop_col))
+rownames(pex6_heatmap) <- pex6_labels
+colnames(pex6_heatmap) <- c("No covar", "Sex covar", 
+                            "Pop covar", "Sex and pop covar")
+```
+
+```{r fahd1, message=FALSE, warning=FALSE, echo=FALSE}
+fahd1 <- which(pheno_cols == "FAHD1")
+fahd1_list_no <- which(pval_no_covar_adj[, fahd1] < 0.05)
+fahd1_list_sex <- which(pval_sex_covar_adj[, fahd1] < 0.05)
+fahd1_list_pop <- which(pval_pop_covar_adj[, fahd1] < 0.05)
+fahd1_list_sex_pop <- which(pval_sex_pop_covar_adj[, fahd1] < 0.05)
+
+fahd1_list_total <- unique(c(fahd1_list_no, fahd1_list_sex,
+                             fahd1_list_pop, fahd1_list_sex_pop))
+fahd1_list_total <- fahd1_list_total[order(fahd1_list_total)]
+
+fahd1_snp <- snp_info_rev$id[fahd1_list_total]
+fahd1_chr <- snp_info_rev$chromosome[fahd1_list_total]
+fahd1_position <- snp_info_rev$position[fahd1_list_total]
+fahd1_labels <- paste(fahd1_chr, fahd1_position, sep = "_")
+
+fahd1_no_col <- as.numeric(fahd1_list_total %in% fahd1_list_no)
+fahd1_sex_col <- as.numeric(fahd1_list_total %in% fahd1_list_sex)
+fahd1_pop_col <- as.numeric(fahd1_list_total %in% fahd1_list_pop)
+fahd1_sex_pop_col <- as.numeric(fahd1_list_total %in% fahd1_list_sex_pop)
+fahd1_heatmap <- as.matrix(cbind(fahd1_no_col, fahd1_sex_col,
+                                 fahd1_pop_col, fahd1_sex_pop_col))
+rownames(fahd1_heatmap) <- fahd1_labels
+colnames(fahd1_heatmap) <- c("No covar", "Sex covar",
+                             "Pop covar", "Sex and pop covar")
+```
+
+```{r heatmaps_1, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+margins <- c(6, 6)
+
+grab_grob <- function(){
+  grid.echo()
+  grid.grab()
+}
+
+gplots::heatmap.2(t(erap2_heatmap), dendrogram='none', main = "ERAP2",
+                  cexRow = 1, cexCol=0.75, key = FALSE,
+                  Rowv=FALSE, Colv=FALSE, trace='no', scale = "none",
+                  margins = margins)
+g1 <- grab_grob()
+
+gplots::heatmap.2(t(pex6_heatmap), dendrogram='none', main = "PEX6",
+                  cexRow = 1, cexCol=0.75, key = FALSE,
+                  Rowv=FALSE, Colv=FALSE, trace='no', scale = "none",
+                  margins = margins)
+g2 <- grab_grob()
+
+gplots::heatmap.2(t(fahd1_heatmap), dendrogram='none', main = "FAHD1",
+                  cexRow = 1, cexCol=0.75, key = FALSE,
+                  Rowv=FALSE, Colv=FALSE, trace='no', scale = "none",
+                  margins = margins)
+g3 <- grab_grob()
+
+grid.newpage()
+png(filename="C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/images/heatmaps.jpeg", width = 600, height = 800)
+grid.arrange(g1,g3,g2,nrow=3,clip=TRUE)
+dev.off()
+```
+
+```{r lollipop, echo=FALSE, message=FALSE, warning=FALSE, fig.width = 8, fig.asp = .4}
+positions <- c(snp_info_rev$position[erap2_list_sex_pop],
+               snp_info_rev$position[fahd1_list_sex_pop],
+               snp_info_rev$position[pex6_list_sex_pop],
+               96875939, 96919716, 
+               1827224, 1840207, 
+               42963865, 42980224)
+pval <- c(pval_sex_pop_covar_adj[erap2_list_sex_pop, erap2],
+          pval_sex_pop_covar_adj[fahd1_list_sex_pop, fahd1],
+          pval_sex_pop_covar_adj[pex6_list_sex_pop, pex6],
+          c(10^-90, 10^-90, 
+            10^-40, 10^-40, 
+            10^-90, 10^-90))
+symbols <- c(rep("ERAP2", length(erap2_list_sex_pop)),
+             rep("FAHD1", length(fahd1_list_sex_pop)),
+             rep("PEX6", length(pex6_list_sex_pop)),
+             rep("ERAP2", 2), 
+             rep("FAHD1", 2), 
+             rep("PEX6", 2))
+sources <- c(rep("eQTL", length(symbols)-6), 
+             rep("Actual", 6))
+df.lollipop <- data.frame(positions = positions,
+                          pval = pval,
+                          symbols = symbols,
+                          sources = sources)
+df.lollipop$pval_log10 <- -log10(df.lollipop$pval)
+
+p <- ggplot(df.lollipop, aes(x=positions, y=pval_log10)) +
+  geom_point(aes(color=sources)) +
+  geom_segment(aes(x=positions, xend=positions, y=0, yend=pval_log10)) +
+  facet_wrap(~symbols, scales = "free") +
+  ylab("-log10(p-value)") +
+  theme(legend.position="bottom", axis.text.x = element_text(angle = 90))
+
+print(p)
+```
+
+```{r correlation, eval=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+# margins <- c(2, 2)
+
+xa_erap2 <- xa_matrix_rev[, erap2_list_sex_pop]
+corr_erap2 <- cor(xa_erap2, method = c("pearson"))
+corr_erap2 <- corr_erap2^2
+corr_erap2[lower.tri(corr_erap2)] <- NA
+
+gplots::heatmap.2(corr_erap2, dendrogram = 'none',
+                   Rowv=FALSE, Colv=FALSE, 
+                  trace='no', scale = "none")
+
+g1 <- grab_grob()
+
+xa_fahd1 <- xa_matrix_rev[, fahd1_list_sex_pop]
+corr_fahd1 <- cor(xa_fahd1, method = c("pearson"))
+corr_fahd1 <- corr_fahd1^2
+corr_fahd1[lower.tri(corr_fahd1)] <- NA
+
+gplots::heatmap.2(corr_fahd1, dendrogram = 'none',
+                   Rowv=FALSE, Colv=FALSE, 
+                  trace='no', scale = "none")
+
+g2 <- grab_grob()
+
+xa_pex6 <- xa_matrix_rev[, pex6_list_sex_pop]
+corr_pex6 <- cor(xa_pex6, method = c("pearson"))
+corr_pex6 <- corr_pex6^2
+corr_pex6[lower.tri(corr_pex6)] <- NA
+
+gplots::heatmap.2(corr_pex6, dendrogram = 'none',
+                  Rowv=FALSE, Colv=FALSE,
+                  trace='no', scale = "none")
+
+g3 <- grab_grob()
+
+grid.newpage()
+png(filename="C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/images/LD.jpeg", width = 800, height = 250)
+grid.arrange(g1,g3,g2,ncol=3,clip=TRUE)
+dev.off()
+```
+
+![Location of statistically significant causal polymorphisms relative to known gene locations and heatmap of the coefficient of determination for Xa matrix for potential causal polymorphic sites](C:/Users/jessb/OneDrive/MS-CB/Quant Gen/Project/images/LD.jpeg)
+
+# References
+
+1. Andrés, A.M., et al. Balancing selection maintains a form of ERAP2 that undergoes nonsense-mediated decay and affects antigen presentation. PLoS Genet 6, e1001157 (2010).
+
+2. Brittingham, A. & de la Cruz, G.P. Ancestry: 2000. (2004).
+
+3. Gene [Internet]. Bethesda (MD): National Library of Medicine (US), National Center for Biotechnology Information; 2004 – [cited 2020 May 12]. Available from: https://www.ncbi.nlm.nih.gov/gene/
+
+4. Lappalainen, T., et al. Transcriptome and genome sequencing uncovers functional variation in humans. Nature 501, 506-511 (2013).
+
+5. Resource, T.I.G.S. Geuvadis. (2020).
+
+```{r pval_no_covar_fn, eval=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+find_pval_nocovar <- function(y, xa, xd){
+  regression.df <- data.frame("Y" = y, "Xa" = xa, "Xd" = xd)
+  model <- lm(Y ~ Xa + Xd, data = regression.df)
+  fstats <- summary(model)$fstatistic
+  pval <- pf(fstats[1],fstats[2],fstats[3],lower.tail=FALSE)
+  return(pval)
+}
+```
+
+```{r pval_1covar_fn, eval=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+find_pval_1covar <- function(y, xa, xd, covar){
+  regression.df <- data.frame("Y" = y, "Xa" = xa, "Xd" = xd, "Covar" = covar)
+  model <- lm(Y ~ Xa + Xd + Covar, data = regression.df)
+  fstats <- summary(model)$fstatistic
+  pval <- pf(fstats[1],fstats[2],fstats[3],lower.tail=FALSE)
+  return(pval)
+}
+```
